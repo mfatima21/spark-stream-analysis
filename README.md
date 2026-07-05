@@ -106,3 +106,4 @@ Screenshots of the Kibana dashboards are in `screenshots/`:
 - Built against Spark 3.4 and the elasticsearch-spark connector.
 # yelp-streaming-analytics
 # yelp-streaming-analytics
+# yelp-streaming-analytics
