@@ -1,39 +1,91 @@
 # spark-stream-analysis
 
-Database Systems course project. It takes the Yelp Open Dataset and runs a few
-streaming analyses on it with Spark Structured Streaming, then pushes the results
-into Elasticsearch so they can be viewed in Kibana.
+Database Systems course project. It runs a set of streaming analytics on the
+Yelp Open Dataset with Spark Structured Streaming and pushes the results into
+Elasticsearch, where they're visualized in Kibana.
 
-The Yelp data comes as huge JSON files, so there's a preprocessing step that
-converts the reviews to CSV in chunks. Spark reads the business file as a normal
-(batch) table and reads the reviews/check-ins as streams, joins them together,
-and writes the output to Elasticsearch.
+The idea is a business-intelligence use case: businesses want to understand their
+customers to use resources better. For example a restaurant figuring out its peak
+days, or seeing which business categories are underserved in a given city. Each
+analysis reads reviews or check-ins as a stream, joins them against the (static)
+business table, and writes the output out for dashboards.
 
-## What it computes
+## Data
 
-There are three separate jobs, each with its own entry point:
+Uses the [Yelp Open Dataset](https://www.yelp.com/dataset), which ships as large
+JSON files (business, review, check-in, tip, user). The review and check-in files
+are converted to CSV first (`preprocessing/`) because they're big and CSV was
+faster to stream in. Business data is small enough to read as a normal batch table
+and is used as a lookup that the streams join against.
 
-- **Review sentiment** (`business_review_streaming.py`) — runs each review's text
-  through NLTK VADER to get a sentiment score, joins it to the business, and adds
-  year / month / day-of-week columns. Output index: `review_sentimental`.
+## Architecture
 
-- **Weighted score** (`business_weighted_score.py`) — the more interesting one.
-  Instead of just averaging sentiment, older reviews are decayed and reviews with
-  more "useful" votes count for more:
+![Architecture](screenshots/architecture.png)
 
-  ```
-  decay_factor   = exp(-0.01 * days_since_review)
-  weighted_score = sentiment * (useful + 0.1) * decay_factor
-  normalized     = weighted_score / review_count
-  ```
+Data source on AWS (S3) → Spark Structured Streaming + Spark SQL for the
+processing → Elasticsearch as the sink → Kibana for the charts. The original
+setup ran on AWS: one Spark master, two Spark workers, and one instance for
+Elasticsearch + Kibana, plus an S3 bucket. Hosts and credentials are read from
+environment variables now (see `.env.example`).
 
-  Currently filtered to businesses in Louisiana (`state == "LA"`).
-  Output index: `business_weighted_averge`.
+## The analyses
 
-- **Busiest day** (`business_checkin_streaming.py`) — counts check-ins per business
-  per day-of-week over a rolling window to find when each place is busiest. Also
-  buckets each business into a category (Restaurant / Shopping / Hospital / etc).
-  Output index: `business_checkin_matrics`.
+Each of these is a separate job with its own entry point.
+
+### Busiest day per business
+
+`business_checkin_streaming.py` — streams the check-ins and applies temporal data
+analytics (grouping by year / month / day-of-week), counting check-ins per business
+per weekday over a rolling window to find when each place is busiest. Output index:
+`business_checkin_matrics`.
+
+![Busiest days for top 5 businesses](screenshots/checkin.png)
+
+The busiest places turned out to be airports and Café Du Monde, and weekends
+(Saturday/Sunday) dominate the check-in counts.
+
+### Weighted sentiment analysis
+
+`business_weighted_score.py` — the more involved one. It combines sentiment scoring
+(NLTK VADER on each review's text), temporal analysis (year / month / day-of-week),
+and a decay-based weighting. Instead of a plain average, older reviews decay and
+reviews with more "useful" votes count for more.
+
+```
+decay_factor   = decay_rate * DATEDIFF(current_timestamp, review_date)
+weighted_score = sentiment_score * (useful + 0.1) * decay_factor
+normalized     = weighted_score / review_count
+```
+
+Output index: `business_weighted_averge`. (Currently filtered to Louisiana,
+`state == "LA"`.)
+
+![Normalized sentiment vs star rating](screenshots/sentiment.png)
+
+This lets you rank businesses by a recency- and usefulness-aware sentiment score
+and compare it against their raw star rating.
+
+There's also a simpler sentiment-only job, `business_review_streaming.py`, which
+just scores each review and writes to the `review_sentimental` index without the
+weighting.
+
+### Opportunities by location
+
+Using the business categories and cities, you can see which categories are common
+or missing in each city — i.e. where there might be a gap for a new business.
+
+![Opportunities for new business by location](screenshots/opportunities.png)
+
+Restaurants dominate most cities (e.g. ~3,700 restaurants in Philadelphia), while
+categories like Home Improvement are much thinner.
+
+### Covid-19 effect on check-ins
+
+Aggregating check-ins by year shows the pandemic impact clearly.
+
+![Covid-19 effect on check-ins](screenshots/covid.png)
+
+Check-ins grew steadily, peaked around 2015, and then dropped sharply in 2020–2022.
 
 ## Layout
 
@@ -42,7 +94,7 @@ config/        Spark session + stream readers + boto3/S3 helper
 schemas/       Spark schemas for business, review, check-in CSVs
 preprocessing/ Yelp JSON -> CSV conversion (run once before streaming)
 udfs/          sentiment, weighted average, category UDFs
-processors/    the three analysis jobs
+processors/    the analysis jobs
 ```
 
 ## Running it
@@ -89,14 +141,6 @@ stays a batch CSV either way (it's just a lookup table).
 `config/sparkStreams.py` decides between Kafka and CSV based on whether
 `KAFKA_SERVERS` is set. The actual Kafka read is in `kafka_utils.py`.
 
-## Dashboards
-
-Screenshots of the Kibana dashboards are in `screenshots/`:
-
-![Review sentiment](screenshots/sentiment.png)
-![Weighted score](screenshots/weighted.png)
-![Busiest day](screenshots/checkin.png)
-
 ## Notes / limitations
 
 - Config (hosts, credentials, paths) is read from environment variables — see
@@ -104,6 +148,5 @@ Screenshots of the Kibana dashboards are in `screenshots/`:
 - Reviews can be read either from CSV files on disk or from a Kafka topic (see
   the Kafka section above). Check-ins and business data are still read from files.
 - Built against Spark 3.4 and the elasticsearch-spark connector.
-# yelp-streaming-analytics
-# yelp-streaming-analytics
-# yelp-streaming-analytics
+- The dashboard images above are from the project presentation
+  (`Stream processing on yelp dataset.pdf`).
