@@ -105,3 +105,4 @@ Screenshots of the Kibana dashboards are in `screenshots/`:
   the Kafka section above). Check-ins and business data are still read from files.
 - Built against Spark 3.4 and the elasticsearch-spark connector.
 # yelp-streaming-analytics
+# yelp-streaming-analytics
